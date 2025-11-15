@@ -1,0 +1,140 @@
+name: deploy-pipeline-prod
+
+on: 
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'databricks_pipelines/**'
+      - '!databricks_pipelines/**/*.md'
+  workflow_dispatch:
+    inputs:
+      job_name:
+        type: string
+        description: Job folder name
+        required: true
+      job_start: 
+        type: boolean
+        description: Launch/restart the job automatically
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  databricks_pipeline_dir: databricks_pipelines
+  environment_subfolder: prod
+  log_folder: logs_dab
+
+jobs:
+  get-jobs:
+    runs-on: ubuntu-24.04
+    outputs:
+      changed_dir_names: ${{ steps.set-changed-dir-names.outputs.changed_dir_names }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Run changed-files with dir_names
+        if: ${{ inputs.job_name == '' }}
+        id: changed-files-dir-names
+        uses: tj-actions/changed-files@main
+        with:
+          json: "true"
+          path: ${{ env.databricks_pipeline_dir }}
+          dir_names: "true"
+          dir_names_max_depth: 1
+          diff_relative: "true"
+      - name: Changed dir_names
+        id: set-changed-dir-names
+        run: |
+          changed_dir_names="${{ steps.changed-files-dir-names.outputs.all_changed_files }}"
+          if [[ $changed_dir_names == '' ]]
+          then
+            changed_dir_names='["${{ inputs.job_name }}"]'
+          fi
+          echo "changed_dir_names=$changed_dir_names"
+          echo "changed_dir_names=$changed_dir_names" >> $GITHUB_OUTPUT
+
+  deploy-jobs:
+    needs: [ get-jobs ]
+    environment: prod
+    runs-on: ubuntu-24.04
+    strategy: 
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.get-jobs.outputs.changed_dir_names) }}
+    env:
+      dir: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - id: setup_python
+        name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - id: databricks_cli
+        name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+        with:
+          version: 0.276.0
+
+      # *** DELETED the old 'databricks_token' step ***
+      # - id: databricks_token
+      #   name: Set Databricks CLI environment variables
+      #   run: |
+      #     echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}" >> $GITHUB_ENV
+      #     echo "DATABRICKS_HOST=${{ vars.DATABRICKS_HOST }}" >> $GITHUB_ENV
+      
+      # *** ADDED this new step for OAuth M2M ***
+      - id: databricks_auth
+        name: Set Databricks OAuth M2M environment variables
+        run: |
+          echo "DATABRICKS_HOST=${{ vars.DATABRICKS_HOST }}" >> $GITHUB_ENV
+          echo "DATABRICKS_CLIENT_ID=${{ secrets.DATABRICKS_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "DATABRICKS_CLIENT_SECRET=${{ secrets.DATABRICKS_CLIENT_SECRET }}" >> $GITHUB_ENV
+          echo "DATABRICKS_AUTH_TYPE=oauth-m2m" >> $GITHUB_ENV
+
+      - id: databricks_cli_test
+        name: Check Databricks CLI connectivity
+        run: |
+          # Check if SPN has access on Databricks Workspace
+          echo "Testing authentication using Databricks workspace ${{ env.DATABRICKS_HOST }}:"
+          databricks api get /api/2.0/preview/scim/v2/Me
+
+      # *** ADD Python Package Manager 'uv' to hadle bundle configuration in python ***    
+      - id: install_uv
+        name: Install 'uv' package
+        run: pip install uv
+      
+      - name: UV - install dependencies
+        working-directory: ${{ env.databricks_pipeline_dir }}/${{ env.dir }}
+        run: |
+          uv sync          
+
+      - name: DAB - validate project
+        working-directory: ${{ env.databricks_pipeline_dir }}/${{ env.dir }}
+        run: |
+          databricks bundle validate --target ${{ env.environment_subfolder}} 
+
+      - name: DAB - deploy project
+        working-directory: ${{ env.databricks_pipeline_dir }}/${{ env.dir }}
+        run: |
+          databricks bundle deploy --target ${{ env.environment_subfolder}} --force-lock
+
+      - name: DAB - summary
+        continue-on-error: true
+        working-directory: ${{ env.databricks_pipeline_dir }}/${{ env.dir }}
+        run: |
+          databricks bundle summary --target ${{ env.environment_subfolder}}
+
+      - name: DAB - start workflow
+        if: ${{ (github.event_name != 'workflow_dispatch' && env.databricks_cicd_autostart_job == 'true') || (github.event_name == 'workflow_dispatch' && inputs.job_start) }}
+        working-directory: ${{ env.databricks_pipeline_dir }}/${{ env.dir }}
+        run: |
+          databricks bundle run ${{ env.dir }}_job --target ${{ env.environment_subfolder }} --restart --no-wait
+
+
