@@ -1,0 +1,19 @@
+# The main pipeline for project_local
+
+resources:
+  pipelines:
+    project_local_etl:
+      name: project_local_etl
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      root_path: "../src/project_local_etl"
+
+      libraries:
+        - glob:
+            include: ../src/project_local_etl/transformations/**
+
+      environment:
+        dependencies:
+          # We include every dependency defined by pyproject.toml by defining an editable environment
+          # that points to the folder where pyproject.toml is deployed.
+          - --editable ${workspace.file_path}
