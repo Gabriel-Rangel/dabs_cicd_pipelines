@@ -1,0 +1,39 @@
+# This is a Databricks asset bundle definition for project_01.
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+bundle:
+  name: project_01
+  uuid: 140d039f-26ee-41c5-992d-b898a7d6935b
+
+include:
+  - resources/*.yml
+  - resources/*/*.yml
+
+# Variable declarations. These variables are assigned in the dev/prod targets below.
+variables:
+  schema:
+    description: The schema to use
+
+targets:
+  dev:
+    # The default target uses 'mode: development' to create a development copy.
+    # - Deployed resources get prefixed with '[dev my_user_name]'
+    # - Any job schedules and triggers are paused by default.
+    # See also https://docs.databricks.com/dev-tools/bundles/deployment-modes.html.
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-1942110704800933.13.azuredatabricks.net
+    variables:
+      schema: dev
+      
+  prod:
+    mode: production
+    workspace:
+      host: https://adb-2909807607791205.5.azuredatabricks.net
+      root_path: /Workspace/pipelines_etl/${bundle.name}/${bundle.target}
+    variables:
+      schema: prod
+    permissions:
+      # - user_name: gabriel.rangel@databricks.com
+      - service_principal_name: 0be436dc-f9f2-45e2-925b-632ef8d5f47f
+        level: CAN_MANAGE
